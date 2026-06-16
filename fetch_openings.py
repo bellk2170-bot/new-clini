@@ -52,20 +52,47 @@ def parse_hira(xml_bytes, out):
                     "전화번호": g("telno"), "lat": "", "lng": ""})
     return total, len(items)
  
+def clean_addr(addr):
+    """카카오 지오코딩 성공률을 높이기 위한 주소 정제"""
+    import re
+    a = addr
+    # 괄호 제거 (동명 등 보조표기)
+    a = re.sub(r'\([^)]*\)', '', a)
+    # 물결표 범위 → 첫 번째 호수만 (101~108호 → 101호)
+    a = re.sub(r'(\d+)\s*[~～]\s*\d+\s*호', r'\1호', a)
+    # 쉼표 뒤 상세주소(층/호) 제거해서 도로명+건물번호만 남김
+    # 예: "테헤란로 152, 3층 301호" → "테헤란로 152"
+    m = re.match(r'^(.*?(?:대로|로)(?:\s*\d+(?:가|번)?길)?\s*\d+(?:-\d+)?)', a)
+    if m:
+        a = m.group(1)
+    a = re.sub(r'\s+', ' ', a).strip()
+    return a if a else addr
+ 
 def geocode_kakao(addr):
-    """카카오 주소 검색 API → (lat, lng) 또는 None"""
-    try:
-        req = urllib.request.Request(
-            KAKAO_GEO + "?" + urllib.parse.urlencode({"query": addr, "size": 1}),
-            headers={"Authorization": f"KakaoAK {KAKAO_REST}", "User-Agent": "gh-action"})
-        with urllib.request.urlopen(req, timeout=10) as r:
-            d = json.loads(r.read())
-        docs = d.get("documents", [])
-        if docs:
-            return docs[0]["y"], docs[0]["x"]  # lat, lng
-    except Exception as e:
-        print(f"  [좌표오류] {addr[:30]}: {e}")
-    return None, None
+    """카카오 주소 검색 API → (lat, lng) 또는 None. 실패 시 정제 주소로 재시도."""
+    import re
+    def _fetch(query):
+        try:
+            req = urllib.request.Request(
+                KAKAO_GEO + "?" + urllib.parse.urlencode({"query": query, "size": 1}),
+                headers={"Authorization": f"KakaoAK {KAKAO_REST}", "User-Agent": "gh-action"})
+            with urllib.request.urlopen(req, timeout=10) as r:
+                d = json.loads(r.read())
+            docs = d.get("documents", [])
+            if docs:
+                return docs[0]["y"], docs[0]["x"]
+        except Exception as e:
+            print(f"  [좌표오류] {query[:30]}: {e}")
+        return None, None
+ 
+    # 1차: 원본 주소
+    lat, lng = _fetch(addr)
+    if lat: return lat, lng
+    # 2차: 정제된 주소
+    cleaned = clean_addr(addr)
+    if cleaned != addr:
+        lat, lng = _fetch(cleaned)
+    return lat, lng
  
 # ── 1단계: 개원 데이터 수집 ──────────────────────────────────
 rows = []
@@ -128,4 +155,3 @@ with open("new-clinics.csv", "w", encoding="utf-8-sig", newline="") as f:
     for r in uniq: w.writerow(r)
  
 print(f"완료: {len(uniq)}건 저장 (최근 12개월, 좌표 포함)")
- 
