@@ -216,8 +216,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);height:100vh
     <div class="stat"><div class="stat-v" id="sv-p">0</div><div class="stat-l">거래처</div></div>
     <div class="stat"><div class="stat-v" id="sv-a">-</div><div class="stat-l">총매출</div></div>
   </div>
-  <button class="upbtn" id="gh-btn" style="margin-left:auto;background:var(--surface2);color:var(--text);border:1px solid var(--border)" onclick="loadFromGithub(true)">🔄 최신</button>
-  <button class="upbtn" style="background:var(--surface2);color:var(--text);border:1px solid var(--border)" onclick="window.open('https://search-ykiho.vercel.app/','_blank','noopener')">🔍 요양기관 조회</button>
+  <button class="upbtn" style="margin-left:auto;background:var(--surface2);color:var(--text);border:1px solid var(--border)" onclick="window.open('https://search-ykiho.vercel.app/','_blank','noopener')">🔍 요양기관 조회</button>
 </div>
 
 <div class="main">
@@ -1679,17 +1678,17 @@ async function loadFromGithub(force){
 }
 // 열 때 자동으로 최신 데이터 확인 (캐시 먼저 복원 → 백그라운드에서 변경 확인)
 window.addEventListener('load', async ()=>{
-  // 1) 캐시 즉시 복원 (로딩 없이 바로 표시)
+  // 1) 캐시 즉시 복원
   try{
-    const cached = await idbGet(IDB_KEY);
+    const cached=await idbGet(IDB_KEY);
     if(cached && isHiraCsv(cached.text)){
       parseHiraCsv(cached.text);
       await restoreCoords();
       onHiraLoaded();
     }
   }catch(e){}
-  // 2) 백그라운드에서 깃헙 변경 여부 확인 (바뀐 경우에만 업데이트)
-  setTimeout(()=>loadFromGithub(false), 1500);
+  // 2) 백그라운드에서 최신 데이터 확인 (변경된 경우에만 업데이트)
+  setTimeout(()=>loadFromGithub(false), 1000);
 });
 
 function darkStyle(){return[
