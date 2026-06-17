@@ -344,14 +344,9 @@ async function handleFiles(files){
   const csvFiles=fileArr.filter(f=>/\.csv$/i.test(f.name));
 
   // 2단계: ZIP 처리 — 내부 엑셀을 병렬로 파싱
-  const KEYWORDS=['리피토','LIPITOR','카듀엣','CADUET','자큐보','리피토플러스'];
-  function hasKeyword(buf){
-    try{
-      const arr=new Uint8Array(buf);
-      const str=new TextDecoder('utf-8',{fatal:false}).decode(arr.slice(0,Math.min(arr.length,500000))).toLowerCase();
-      return KEYWORDS.some(k=>str.includes(k.toLowerCase()));
-    }catch(e){ return true; }
-  }
+  // ※ xlsx 파일은 그 자체가 ZIP(압축) 포맷이라 원본 바이트를 평문 스캔해도
+  //    '리피토' 같은 키워드가 절대 잡히지 않는다. 그래서 키워드 사전필터는 제거하고
+  //    모든 엑셀을 parseXlsx로 넘긴다. (parseXlsx의 classify()가 관련 없는 행은 이미 걸러냄)
 
   let done=0;
   const total=zipFiles.length+xlsFiles.length;
@@ -363,12 +358,10 @@ async function handleFiles(files){
       const zip=await JSZip.loadAsync(f);
       const xls=Object.values(zip.files).filter(x=>/\.xlsx?$/i.test(x.name)&&!x.dir);
       showLoad(`분석 중: ${f.name}`,Math.round(((done+0.5)/total)*40),`📦 ${xls.length}개 파일 병렬 처리 중`);
-      // 병렬로 버퍼 로드 후 키워드 있는 것만 파싱
+      // 병렬로 버퍼 로드 후 전부 파싱 (관련 행 필터링은 parseXlsx 내부 classify가 담당)
       const bufs=await Promise.all(xls.map(x=>x.async('arraybuffer')));
       for(let xi=0;xi<bufs.length;xi++){
-        if(hasKeyword(bufs[xi])){
-          try{ parseXlsx(bufs[xi],rows); }catch(e){ console.warn('파싱 오류:',xls[xi].name,e); }
-        }
+        try{ parseXlsx(bufs[xi],rows); }catch(e){ console.warn('파싱 오류:',xls[xi].name,e); }
       }
     }catch(e){ console.warn('ZIP 열기 오류:',f.name,e); }
     done++;
@@ -380,7 +373,7 @@ async function handleFiles(files){
     showLoad(`엑셀 분석 중 (${xi+1}/${xlsFiles.length}): ${f.name}`,Math.round((done/total)*40));
     try{
       const buf=await f.arrayBuffer();
-      if(hasKeyword(buf)) parseXlsx(buf,rows);
+      parseXlsx(buf,rows);
     }catch(e){ console.warn('엑셀 파싱 오류:',f.name,e); }
     done++;
   }
