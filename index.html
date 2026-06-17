@@ -348,25 +348,45 @@ async function handleFiles(files){
   //    '리피토' 같은 키워드가 절대 잡히지 않는다. 그래서 키워드 사전필터는 제거하고
   //    모든 엑셀을 parseXlsx로 넘긴다. (parseXlsx의 classify()가 관련 없는 행은 이미 걸러냄)
   //    파싱은 CPU 작업이라 병렬 로드 이점이 없어 메모리를 아끼는 순차 방식을 쓴다.
+  //    ※ ZIP 안에 또 ZIP이 들어있어도(중첩 압축) 재귀로 끝까지 풀어서 처리한다.
 
   let done=0;
   const total=zipFiles.length+xlsFiles.length;
+  const MAX_ZIP_DEPTH=8; // 무한 재귀 방지용 안전장치
+
+  // ZIP 하나를 받아: 안의 엑셀은 파싱하고, 안의 ZIP은 또 풀어서 재귀 처리
+  async function parseZipEntries(zipObj, label, depth, zi){
+    const entries=Object.values(zipObj.files).filter(x=>!x.dir);
+    const xls=entries.filter(x=>/\.xlsx?$/i.test(x.name));
+    const nested=entries.filter(x=>/\.zip$/i.test(x.name));
+    // (1) 이 단계의 엑셀 파싱 — 진행바를 파일 단위로 부드럽게 갱신 (예전 표시 방식)
+    for(let i=0;i<xls.length;i++){
+      showLoad(`분석 중: ${label} › ${xls[i].name}`,Math.round(((done+i/xls.length)/total)*40),`📦 ${zi+1}/${zipFiles.length}번째 ZIP`);
+      try{
+        const buf=await xls[i].async('arraybuffer');
+        parseXlsx(buf,rows);
+      }catch(e){ console.warn('파싱 오류:',xls[i].name,e); }
+    }
+    // (2) 중첩 ZIP을 풀어서 재귀 처리
+    if(nested.length){
+      if(depth>=MAX_ZIP_DEPTH){ console.warn('ZIP 중첩이 너무 깊어 건너뜀:',label); return; }
+      for(const nz of nested){
+        showLoad(`압축 해제 중: ${label} › ${nz.name}`,Math.round(((done+0.5)/total)*40),`🗜 중첩 ZIP`);
+        try{
+          const nbuf=await nz.async('arraybuffer');
+          const nzip=await JSZip.loadAsync(nbuf);
+          await parseZipEntries(nzip, `${label} › ${nz.name}`, depth+1, zi);
+        }catch(e){ console.warn('중첩 ZIP 열기 오류:',nz.name,e); }
+      }
+    }
+  }
 
   for(let zi=0;zi<zipFiles.length;zi++){
     const f=zipFiles[zi];
     showLoad(`ZIP 열기 중 (${zi+1}/${zipFiles.length}): ${f.name}`,Math.round((done/total)*40));
     try{
       const zip=await JSZip.loadAsync(f);
-      const xls=Object.values(zip.files).filter(x=>/\.xlsx?$/i.test(x.name)&&!x.dir);
-      // 메모리 절약: 한 파일씩 압축 해제 → 파싱 → 즉시 해제(버퍼가 매 반복마다 GC됨).
-      // xlsx 파싱은 CPU 작업이라 한꺼번에 다 풀어두는 병렬 로드는 이점이 없고 메모리만 급증함.
-      for(let xi=0;xi<xls.length;xi++){
-        showLoad(`분석 중: ${f.name}`,Math.round(((done+0.5)/total)*40),`📦 ${xi+1}/${xls.length} 파일 처리 중`);
-        try{
-          const buf=await xls[xi].async('arraybuffer');
-          parseXlsx(buf,rows);
-        }catch(e){ console.warn('파싱 오류:',xls[xi].name,e); }
-      }
+      await parseZipEntries(zip, f.name, 0, zi);
     }catch(e){ console.warn('ZIP 열기 오류:',f.name,e); }
     done++;
   }
