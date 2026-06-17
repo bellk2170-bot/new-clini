@@ -343,7 +343,16 @@ async function handleFiles(files){
   const xlsFiles=fileArr.filter(f=>/\.xlsx?$/i.test(f.name));
   const csvFiles=fileArr.filter(f=>/\.csv$/i.test(f.name));
 
-  // 2단계: 각 ZIP 독립적으로 처리 (하나 실패해도 나머지 계속)
+  // 2단계: ZIP 처리 — 내부 엑셀을 병렬로 파싱
+  const KEYWORDS=['리피토','LIPITOR','카듀엣','CADUET','자큐보','리피토플러스'];
+  function hasKeyword(buf){
+    try{
+      const arr=new Uint8Array(buf);
+      const str=new TextDecoder('utf-8',{fatal:false}).decode(arr.slice(0,Math.min(arr.length,500000))).toLowerCase();
+      return KEYWORDS.some(k=>str.includes(k.toLowerCase()));
+    }catch(e){ return true; }
+  }
+
   let done=0;
   const total=zipFiles.length+xlsFiles.length;
 
@@ -353,12 +362,13 @@ async function handleFiles(files){
     try{
       const zip=await JSZip.loadAsync(f);
       const xls=Object.values(zip.files).filter(x=>/\.xlsx?$/i.test(x.name)&&!x.dir);
-      for(let xi=0;xi<xls.length;xi++){
-        showLoad(`분석 중: ${f.name} › ${xls[xi].name}`,Math.round(((done+xi/xls.length)/total)*40),`📦 ${zi+1}/${zipFiles.length}번째 ZIP`);
-        try{
-          const buf=await xls[xi].async('arraybuffer');
-          parseXlsx(buf,rows);
-        }catch(e){ console.warn('엑셀 파싱 오류:',xls[xi].name,e); }
+      showLoad(`분석 중: ${f.name}`,Math.round(((done+0.5)/total)*40),`📦 ${xls.length}개 파일 병렬 처리 중`);
+      // 병렬로 버퍼 로드 후 키워드 있는 것만 파싱
+      const bufs=await Promise.all(xls.map(x=>x.async('arraybuffer')));
+      for(let xi=0;xi<bufs.length;xi++){
+        if(hasKeyword(bufs[xi])){
+          try{ parseXlsx(bufs[xi],rows); }catch(e){ console.warn('파싱 오류:',xls[xi].name,e); }
+        }
       }
     }catch(e){ console.warn('ZIP 열기 오류:',f.name,e); }
     done++;
@@ -369,7 +379,8 @@ async function handleFiles(files){
     const f=xlsFiles[xi];
     showLoad(`엑셀 분석 중 (${xi+1}/${xlsFiles.length}): ${f.name}`,Math.round((done/total)*40));
     try{
-      parseXlsx(await f.arrayBuffer(),rows);
+      const buf=await f.arrayBuffer();
+      if(hasKeyword(buf)) parseXlsx(buf,rows);
     }catch(e){ console.warn('엑셀 파싱 오류:',f.name,e); }
     done++;
   }
