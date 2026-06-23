@@ -310,10 +310,7 @@ async function startGeocode(addrs){
     const pct=Math.round((i/addrTotal)*100);
     geoTxt.textContent=`📍 좌표 변환 ${Math.min(i+BATCH,addrTotal)}/${addrTotal}`;
     geoFill.style.width=pct+'%';
-    await Promise.all(batch.map(addr=>{
-const row=allData.find(x=>x.addr===addr);
-return geocodeOne(addr,row?.name||'');
-}));
+    await Promise.all(batch.map(addr=>geocodeOne(addr)));
     // gcache 결과를 allData에 반영 (lat 있든 없든 매번 갱신)
     for(let j=0;j<allData.length;j++){
       const cached=gcache[allData[j].addr];
@@ -661,16 +658,19 @@ function extractHo(a){
 
 // 지오코딩 정확도용: 도로명+건물번호까지만 깔끔히 남긴 주소 문자열
 // (괄호·층/호·상가명 등 잡음을 제거해 네이버 지오코더 적중률을 높임)
-function cleanAddrForGeocode(addr){
-    if(!addr) return '';
-    let s=addr;
-    s=s.replace(/\([^)]*\)/g,' ');
-    s=s.replace(/\d+\s*층/g,' ');
-    s=s.replace(/\d+\s*호/g,' ');
-    s=s.replace(/외\s*\d+\s*필지/g,'');
-    s=s.replace(/,/g,' ');
-    s=s.replace(/\s+/g,' ').trim();
-    return s;
+function cleanAddrForGeocode(a){
+  if(!a) return a;
+  let s=a;
+  s=s.replace(/\([^)]*\)/g,' ').replace(/@/g,' ');
+  s=s.replace(/[가-힣A-Za-z0-9-]*외\s*\d+\s*필지/g,' ');
+  s=s.replace(/\s+/g,' ').trim();
+  // 시도 + 시군구 + 도로명 + 건물번호 까지만 잘라서 반환
+  const m=s.match(/^(.*?(?:대로|로)(?:\s*\d+(?:가|번)?길)?\s*\d+(?:-\d+)?)/);
+  if(m) return m[1].replace(/\s+/g,' ').trim();
+  // 도로명 매칭 실패 시 동+번지까지
+  const m2=s.match(/^(.*?[가-힣]+(?:동|리|가)\s*\d+(?:-\d+)?)/);
+  if(m2) return m2[1].replace(/\s+/g,' ').trim();
+  return s;
 }
 
 async function buildData(rows){
@@ -787,43 +787,46 @@ function isImpreciseAddr(addr){
   return !(roadBldNo||jibunNo);
 }
 
-async function geocodeOne(addr,name=''){
+async function geocodeOne(addr){
   if(!addr) return null;
-  const cacheKey=addr+'_'+name;
-  if(gcache[cacheKey]!==undefined) return gcache[cacheKey];
-
-  const queries=[addr];
+  if(gcache[addr]!==undefined) return gcache[addr];
+  const queries=[];
   const cleaned=cleanAddrForGeocode(addr);
+  queries.push(addr);
   if(cleaned!==addr) queries.push(cleaned);
-  queries.push(cleaned.replace(/\d+\s*층/g,''));
-
+  async function kakaoSearch(q){
+    return new Promise(resolve=>{
+      try{
+        const geocoder=new kakao.maps.services.Geocoder();
+        geocoder.addressSearch(q,(result,status)=>{
+          if(status===kakao.maps.services.Status.OK && result.length){
+             resolve({lat:parseFloat(result[0].y),lng:parseFloat(result[0].x)});
+          } else resolve(null);
+        });
+      }catch(e){resolve(null)}
+    });
+  }
   async function naverSearch(q){
     return new Promise(resolve=>{
       try{
         naver.maps.Service.geocode({query:q},(status,response)=>{
-          if(status!==naver.maps.Service.Status.OK || !response.v2?.addresses?.length){
-            resolve(null); return;
-          }
-          const item=response.v2.addresses[0];
-          resolve({lat:parseFloat(item.y),lng:parseFloat(item.x)});
+          if(status===naver.maps.Service.Status.OK && response?.v2?.addresses?.length){
+            let a=response.v2.addresses[0];
+            resolve({lat:parseFloat(a.y),lng:parseFloat(a.x)});
+          } else resolve(null);
         });
-      }catch(e){resolve(null);}
-    });
+      }catch(e){resolve(null)}
+    })
   }
-
   for(const q of queries){
-    const loc=await naverSearch(q);
-    if(loc){
-      gcache[cacheKey]=loc;
-      return loc;
-    }
-    await sleep(100);
+    let loc=window.kakao? await kakaoSearch(q):null;
+    if(loc){gcache[addr]=loc; return loc;}
+    loc=window.naver? await naverSearch(q):null;
+    if(loc){gcache[addr]=loc; return loc;}
   }
-  gcache[cacheKey]=null;
+  gcache[addr]=null;
   return null;
 }
-
-
 
 function buildFilters(){
   const pf=document.getElementById('pf');
@@ -1854,6 +1857,7 @@ function darkStyle(){return[
 ];}
 </script>
 
+<script src="//dapi.kakao.com/v2/maps/sdk.js?appkey=2bb9925b17de43f8883914bedc4eefdb&libraries=services"></script>
 <script src="https://oapi.map.naver.com/openapi/v3/maps.js?ncpKeyId=bk2yj9j9jx&submodules=geocoder"></script>
 <script>
   // 네이버 SDK는 callback 미지원 → 로드 완료 후 직접 초기화
