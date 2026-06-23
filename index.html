@@ -707,9 +707,9 @@ async function buildData(rows){
   // 2단계: 키 결정 + 누적 (사업자번호 우선, 없으면 주소)
   const mp={};
   for(const r of rows){
-    let key;
+    let key, biz='';
     if(useBiz(r)){
-      key='BIZ:'+r.biz;
+      key='BIZ:'+r.biz; biz=r.biz;
     } else {
       if(!r.addr||r.addr.trim().length<=3) continue;
       const bk=normalizeAddr(r.addr, true);
@@ -719,7 +719,7 @@ async function buildData(rows){
       if(!key) continue;
     }
     if(!mp[key]){
-      mp[key]={orig:r.tgt||r.addr, addr:r.addr||r.tgt, prods:{}, qtys:{}};
+      mp[key]={orig:r.tgt||r.addr, nameSet:!!r.tgt, addr:r.addr||r.tgt, prods:{}, qtys:{}, biz};
     } else {
       // 표시 주소: 번지 있는(정밀) 주소 우선, 동급이면 더 짧은 것
       const cand=r.addr||r.tgt||'';
@@ -728,12 +728,33 @@ async function buildData(rows){
         if((curImp && !candImp) || (curImp===candImp && cand.length < mp[key].addr.length))
           mp[key].addr=cand;
       }
-      // 거래처명: 비어 있으면(=주소로 대체돼 있으면) 실제 거래처명으로 채움
-      if(r.tgt && (mp[key].orig===mp[key].addr || !mp[key].orig)) mp[key].orig=r.tgt;
+      // 거래처명: 실제 거래처명이 한 번이라도 있으면 그것으로 채움
+      if(r.tgt && !mp[key].nameSet){ mp[key].orig=r.tgt; mp[key].nameSet=true; }
     }
     mp[key].prods[r.cat]=(mp[key].prods[r.cat]||0)+r.amt;
     mp[key].qtys[r.cat]=(mp[key].qtys[r.cat]||0)+r.qty;
   }
+
+  // 거래처명이 없던 항목: 이름을 (백필된) 정밀 주소로 채움 → '동까지만' 대신 전체주소 표시
+  for(const k in mp){ if(!mp[k].nameSet) mp[k].orig=mp[k].addr; }
+
+  // 같은 정밀주소면 합치기: 주소키 항목을 '동일 정밀주소의 유일한 사업자번호 항목'으로 흡수.
+  // (서로 다른 사업자번호가 같은 주소를 공유하면 = 같은 건물 다른 약국 → 흡수하지 않음)
+  const sigOf=(a)=> isImpreciseAddr(a) ? null : normalizeAddr(a, false);
+  const bizBySig={}, sigConflict=new Set();
+  for(const k in mp){ const e=mp[k]; if(!e.biz) continue; const s=sigOf(e.addr); if(!s) continue; if(bizBySig[s] && bizBySig[s]!==e) sigConflict.add(s); else bizBySig[s]=e; }
+  for(const k in mp){
+    const e=mp[k]; if(e.biz) continue;
+    const s=sigOf(e.addr); if(!s) continue;
+    const t=bizBySig[s];
+    if(t && !sigConflict.has(s)){
+      for(const p in e.prods) t.prods[p]=(t.prods[p]||0)+e.prods[p];
+      for(const p in e.qtys) t.qtys[p]=(t.qtys[p]||0)+e.qtys[p];
+      if(!t.nameSet && e.nameSet){ t.orig=e.orig; t.nameSet=true; }
+      delete mp[k];
+    }
+  }
+
   allData=[];
   const entries=Object.values(mp);
   for(const e of entries){
