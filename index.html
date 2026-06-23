@@ -1156,7 +1156,7 @@ async function showPopup(d){
     if(pharm.length){
       document.getElementById('pp-pharm').innerHTML=pharm.map(c=>pharmHtml(c)).join('');
     } else {
-      document.getElementById('pp-pharm').innerHTML='<div class="cli-empty">좌표 데이터 없음</div>';
+      document.getElementById('pp-pharm').innerHTML='<div class="cli-empty">같은 건물 약국 없음</div>'+diag;
     }
     document.getElementById('pp-near').innerHTML=near.length
       ?near.map(c=>cliHtml(c,false,true)).join('')
@@ -1201,8 +1201,9 @@ async function fetchClinics(lat,lng,addr){
   //       분당로 50          → road=분당로,          bno=50
   function extractRoadAndBno(a){
     if(!a) return {road:null, bno:null};
-    // 괄호/@제거 후 공백까지 모두 제거 → 띄어쓰기 차이 무력화
-    const s=a.replace(/\([^)]*\)/g,' ').replace(/@/g,' ').replace(/\s+/g,'');
+    // 괄호/@제거 → 층수 제거(공백붙은 'N층'이 건물번호에 들러붙는 것 방지) → 공백 제거
+    let s=a.replace(/\([^)]*\)/g,' ').replace(/@/g,' ');
+    s=stripFloor(s).replace(/\s+/g,'');
     // '…로/대로' + (NN길)? + 건물번호 패턴을 끝까지 훑어 마지막 매치 채택
     const re=/([가-힣]+?(?:대로|로))(\d+(?:가|번)?길)?(\d+(?:-\d+)?)/g;
     let best=null, mm;
