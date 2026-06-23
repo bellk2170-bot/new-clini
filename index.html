@@ -303,7 +303,7 @@ async function startGeocode(addrs){
   const geoTxt=document.getElementById('geo-txt');
   const geoFill=document.getElementById('geo-fill');
   geoBar.classList.add('show');
-  const BATCH=3;
+  const BATCH=8;
   for(let i=0;i<uniqueAddrs.length;i+=BATCH){
     if(!window._mapOn) break;
     const batch=uniqueAddrs.slice(i,i+BATCH);
@@ -788,45 +788,31 @@ function isImpreciseAddr(addr){
 }
 
 async function geocodeOne(addr){
-  if(!addr) return null;
+  if(!addr||addr.length<4) return null;
   if(gcache[addr]!==undefined) return gcache[addr];
-  const queries=[];
+  if(!(window.naver&&naver.maps&&naver.maps.Service)){ gcache[addr]=null; return null; }
+  // 잡음 제거한 주소 우선 시도 → 실패 시 원본 시도
   const cleaned=cleanAddrForGeocode(addr);
+  const queries=[];
+  if(cleaned && cleaned!==addr) queries.push(cleaned);
   queries.push(addr);
-  if(cleaned!==addr) queries.push(cleaned);
-  async function kakaoSearch(q){
-    return new Promise(resolve=>{
-      try{
-        const geocoder=new kakao.maps.services.Geocoder();
-        geocoder.addressSearch(q,(result,status)=>{
-          if(status===kakao.maps.services.Status.OK && result.length){
-             resolve({lat:parseFloat(result[0].y),lng:parseFloat(result[0].x)});
-          } else resolve(null);
-        });
-      }catch(e){resolve(null)}
-    });
-  }
-  async function naverSearch(q){
-    return new Promise(resolve=>{
-      try{
-        naver.maps.Service.geocode({query:q},(status,response)=>{
-          if(status===naver.maps.Service.Status.OK && response?.v2?.addresses?.length){
-            let a=response.v2.addresses[0];
-            resolve({lat:parseFloat(a.y),lng:parseFloat(a.x)});
-          } else resolve(null);
-        });
-      }catch(e){resolve(null)}
-    })
-  }
+  const tryGeocode=(q)=>new Promise(res=>{
+    try{
+      naver.maps.Service.geocode({query:q}, (status, response)=>{
+        if(status!==naver.maps.Service.Status.OK || !response.v2 || !response.v2.addresses || !response.v2.addresses.length){ res(null); return; }
+        const item=response.v2.addresses[0];
+        res({lat:parseFloat(item.y), lng:parseFloat(item.x)});
+      });
+    }catch(e){ res(null); }
+  });
   for(const q of queries){
-    let loc=window.kakao? await kakaoSearch(q):null;
-    if(loc){gcache[addr]=loc; return loc;}
-    loc=window.naver? await naverSearch(q):null;
-    if(loc){gcache[addr]=loc; return loc;}
+    const loc=await tryGeocode(q);
+    if(loc){ gcache[addr]=loc; return loc; }
   }
-  gcache[addr]=null;
-  return null;
+  gcache[addr]=null; return null;
 }
+
+
 
 function buildFilters(){
   const pf=document.getElementById('pf');
@@ -1170,7 +1156,7 @@ async function showPopup(d){
     if(pharm.length){
       document.getElementById('pp-pharm').innerHTML=pharm.map(c=>pharmHtml(c)).join('');
     } else {
-      document.getElementById('pp-pharm').innerHTML='<div class="cli-empty">같은 건물 약국 없음</div>'+diag;
+      document.getElementById('pp-pharm').innerHTML='<div class="cli-empty">좌표 데이터 없음</div>';
     }
     document.getElementById('pp-near').innerHTML=near.length
       ?near.map(c=>cliHtml(c,false,true)).join('')
@@ -1215,9 +1201,8 @@ async function fetchClinics(lat,lng,addr){
   //       분당로 50          → road=분당로,          bno=50
   function extractRoadAndBno(a){
     if(!a) return {road:null, bno:null};
-    // 괄호/@제거 → 층수 제거(공백붙은 'N층'이 건물번호에 들러붙는 것 방지) → 공백 제거
-    let s=a.replace(/\([^)]*\)/g,' ').replace(/@/g,' ');
-    s=stripFloor(s).replace(/\s+/g,'');
+    // 괄호/@제거 후 공백까지 모두 제거 → 띄어쓰기 차이 무력화
+    const s=a.replace(/\([^)]*\)/g,' ').replace(/@/g,' ').replace(/\s+/g,'');
     // '…로/대로' + (NN길)? + 건물번호 패턴을 끝까지 훑어 마지막 매치 채택
     const re=/([가-힣]+?(?:대로|로))(\d+(?:가|번)?길)?(\d+(?:-\d+)?)/g;
     let best=null, mm;
@@ -1857,7 +1842,6 @@ function darkStyle(){return[
 ];}
 </script>
 
-<script src="//dapi.kakao.com/v2/maps/sdk.js?appkey=2bb9925b17de43f8883914bedc4eefdb&libraries=services"></script>
 <script src="https://oapi.map.naver.com/openapi/v3/maps.js?ncpKeyId=bk2yj9j9jx&submodules=geocoder"></script>
 <script>
   // 네이버 SDK는 callback 미지원 → 로드 완료 후 직접 초기화
