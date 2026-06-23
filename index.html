@@ -435,6 +435,9 @@ function parseXlsx(buf,out){
       const tc=fc('TARGET','거래처명','입고처명','매입처명','입고처','발주처');
       const dc=fc('주소','소재지','기본주소');
       const sc=fc('규격'); // 규격 컬럼 (통당 정수 파싱용)
+      // 약국(거래처) 사업자등록번호 컬럼 — 공급자/제약사 컬럼은 제외
+      let bc=fc('거래처사업자','매출처사업자','실납처사업자','구입사업자','공급받은자사업자');
+      if(bc<0) bc=H.findIndex(h=>/사업자(등록)?번호/.test(h) && !/공급자|제약|도매|본사/.test(h));
       
       if(pc<0) continue;
       for(let ri=1;ri<rows.length;ri++){
@@ -457,7 +460,9 @@ function parseXlsx(buf,out){
         const spec=sc>=0?String(r[sc]||'').trim():'';
         const tabs=getTabsPer(spec)||getTabsPer(p); // 규격 우선, 없으면 제품명
         const amt=qty*tabs*(UNIT_PRICE[det.key]||0);
-        out.push({tgt,addr,cat:det.cat,qty:qty*tabs,amt});
+        const bizRaw=bc>=0?String(r[bc]||'').replace(/\D/g,''):'';
+        const biz=bizRaw.length===10?bizRaw:'';
+        out.push({tgt,addr,cat:det.cat,qty:qty*tabs,amt,biz});
       }
     }
   }catch(e){ console.warn("parseXlsx 오류:", e); }
@@ -669,9 +674,28 @@ function cleanAddrForGeocode(a){
 }
 
 async function buildData(rows){
-  // 1단계: 호수 없는 키(baseKey)로 그룹핑해서 각 그룹의 호수 목록 파악
+  // 0단계: 사업자번호 신뢰성 가드
+  //  - 한 번호에 거래처명이 5개 초과(공급자/플레이스홀더 의심)
+  //  - 한 번호가 서로 다른 '정밀 건물' 5곳 초과(도매 배송번호 등) → 신뢰 안 함
+  const bizNames={}, bizCores={};
+  for(const r of rows){
+    if(!r.biz) continue;
+    const nm=(r.tgt||'').replace(/\s/g,'');
+    if(nm){ (bizNames[r.biz]=bizNames[r.biz]||new Set()).add(nm); }
+    if(r.addr && !isImpreciseAddr(r.addr)){
+      const sig=(addrPrefix(r.addr)||'')+'|'+(addrCore(r.addr)||'');
+      (bizCores[r.biz]=bizCores[r.biz]||new Set()).add(sig);
+    }
+  }
+  const bizBad=new Set();
+  for(const b in bizNames) if(bizNames[b].size>5) bizBad.add(b);
+  for(const b in bizCores) if(bizCores[b].size>5) bizBad.add(b);
+  const useBiz=(r)=> r.biz && !bizBad.has(r.biz);
+
+  // 1단계: (사업자번호로 안 묶이는 행만) 호수 그룹핑 → 주소키 결정용
   const baseGroups={};
   for(const r of rows){
+    if(useBiz(r)) continue;
     if(!r.addr||r.addr.trim().length<=3) continue;
     const bk=normalizeAddr(r.addr, true);
     if(!bk) continue;
@@ -679,23 +703,33 @@ async function buildData(rows){
     const ho=extractHo(r.addr);
     if(ho) baseGroups[bk].add(ho);
   }
-  // 2단계: 실제 키 결정
-  // - 그룹 내 호수 종류가 2개 이상 → 둘 다 호수 있고 다른 경우 → 호수 포함 키로 분리
-  // - 그룹 내 호수 종류가 0~1개 → 한쪽만 있거나 없음 → 호수 무시하고 합산
+
+  // 2단계: 키 결정 + 누적 (사업자번호 우선, 없으면 주소)
   const mp={};
   for(const r of rows){
-    if(!r.addr||r.addr.trim().length<=3) continue;
-    const bk=normalizeAddr(r.addr, true);
-    if(!bk) continue;
-    const hos=baseGroups[bk]||new Set();
-    const useHo=hos.size>=2; // 2개 이상의 다른 호수 → 분리
-    const key=normalizeAddr(r.addr, !useHo);
-    if(!key) continue;
+    let key;
+    if(useBiz(r)){
+      key='BIZ:'+r.biz;
+    } else {
+      if(!r.addr||r.addr.trim().length<=3) continue;
+      const bk=normalizeAddr(r.addr, true);
+      if(!bk) continue;
+      const useHo=(baseGroups[bk]||new Set()).size>=2; // 2개 이상 다른 호수 → 분리
+      key=normalizeAddr(r.addr, !useHo);
+      if(!key) continue;
+    }
     if(!mp[key]){
       mp[key]={orig:r.tgt||r.addr, addr:r.addr||r.tgt, prods:{}, qtys:{}};
     } else {
+      // 표시 주소: 번지 있는(정밀) 주소 우선, 동급이면 더 짧은 것
       const cand=r.addr||r.tgt||'';
-      if(cand && cand.length < mp[key].addr.length) mp[key].addr=cand;
+      if(cand){
+        const curImp=isImpreciseAddr(mp[key].addr), candImp=isImpreciseAddr(cand);
+        if((curImp && !candImp) || (curImp===candImp && cand.length < mp[key].addr.length))
+          mp[key].addr=cand;
+      }
+      // 거래처명: 비어 있으면(=주소로 대체돼 있으면) 실제 거래처명으로 채움
+      if(r.tgt && (mp[key].orig===mp[key].addr || !mp[key].orig)) mp[key].orig=r.tgt;
     }
     mp[key].prods[r.cat]=(mp[key].prods[r.cat]||0)+r.amt;
     mp[key].qtys[r.cat]=(mp[key].qtys[r.cat]||0)+r.qty;
