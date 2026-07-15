@@ -232,6 +232,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);height:100vh
   </div>
   <div class="mwrap">
     <div id="map"></div>
+    <div id="heat-badge" style="display:none;position:absolute;top:10px;left:10px;z-index:50;background:rgba(0,0,0,.72);color:var(--text2);font-size:11px;padding:5px 9px;border-radius:6px;pointer-events:none;max-width:280px;line-height:1.5"></div>
     <div class="popup" id="popup">
       <button class="closebtn" onclick="closePopup()">✕</button>
       <div class="pname" id="pp-n"></div>
@@ -292,6 +293,10 @@ window.initMap=function(){
     zoomControl:true,
     zoomControlOptions:{position:naver.maps.Position.RIGHT_CENTER},
   });
+  // visualization 등 서브모듈은 본 스크립트 이후에 로드됨 → 로드 완료 후 히트맵 재시도
+  naver.maps.onJSContentLoaded=function(){
+    try{ renderMap(); }catch(e){ console.warn('onJSContentLoaded renderMap', e); }
+  };
 };
 
 
@@ -999,38 +1004,52 @@ function itemAmount(d){
 }
 
 function updateHeatmap(list){
-  if(!gmap || !window.naver || !naver.maps.visualization){ return; }
+  if(!gmap) return;
   // 시/구 필터가 잡혔을 때만 표시 (도 단위 전체는 너무 넓어 의미 없음)
   const on = activeReg.gu.size>0 || activeReg.si.size>0;
+  const badge=document.getElementById('heat-badge');
+  const showBadge=(txt,warn)=>{ if(badge){ badge.textContent=txt; badge.style.display=txt?'block':'none'; badge.style.color=warn?'#ff6b6b':'var(--text2)'; } };
   if(!on){
-    if(heatmap){ heatmap.setMap(null); heatmap=null; }
+    if(heatmap){ heatmap.setMap(null); }
+    showBadge('');
     return;
   }
-  const pts=[];
+  // 시각화 서브모듈 로드 확인 (미로드면 원인을 화면에 표시)
+  if(!window.naver || !naver.maps || !naver.maps.visualization){
+    showBadge('⚠ 히트맵 모듈(visualization) 미로드 — 지도 인증/네트워크 확인', true);
+    return;
+  }
+  const pts=[], amts=[];
   for(const d of list){
     if(!d.lat||!d.lng) continue;
     const amt=itemAmount(d);
     if(amt<=0) continue;
-    pts.push(new naver.maps.visualization.WeightedLocation(d.lat, d.lng, amt));
+    pts.push(new naver.maps.visualization.WeightedLocation(Number(d.lat), Number(d.lng), amt));
+    amts.push(amt);
   }
   if(!pts.length){
-    if(heatmap){ heatmap.setMap(null); heatmap=null; }
+    if(heatmap){ heatmap.setMap(null); }
+    showBadge('히트맵: 표시할 좌표 없음 (좌표 변환 대기 중일 수 있음)');
     return;
   }
-  if(!heatmap){
-    heatmap=new naver.maps.visualization.HeatMap({
-      map:gmap, data:pts, radius:24, opacity:0.65
-    });
-  } else {
-    heatmap.setData(pts);
-    heatmap.setMap(gmap);
-  }
-  // 금액 편차가 커서 최대값 기준으로 두면 대부분 안 보임 → 상위 15% 평균을 기준으로
-  const amts=pts.map(p=>p.weight).sort((a,b)=>b-a);
+  // 금액 편차가 커서 최대값 기준이면 대부분 안 보임 → 상위 15% 평균을 기준으로
+  amts.sort((a,b)=>b-a);
   const topN=Math.max(1, Math.round(amts.length*0.15));
-  const top=amts.slice(0, topN);
-  const mx=top.reduce((s,v)=>s+v,0)/top.length;
-  heatmap.setOptions({ colorMap:'seoul', max: mx||amts[0] });
+  const mx=amts.slice(0,topN).reduce((s,v)=>s+v,0)/topN;
+  try{
+    if(!heatmap){
+      heatmap=new naver.maps.visualization.HeatMap({ map:gmap, data:pts, radius:24, opacity:0.65 });
+    } else {
+      heatmap.setData(pts);
+      heatmap.setMap(gmap);
+    }
+    heatmap.setOptions({ colorMap:'seoul', radius:24, opacity:0.65, max: mx||amts[0] });
+    heatmap.redraw();   // ★ setData 후 redraw() 해야 화면에 반영됨 (공식 문서)
+    showBadge(`🔥 히트맵 ${pts.length}곳 표시 중`);
+  }catch(e){
+    console.error('heatmap error', e);
+    showBadge('⚠ 히트맵 오류: '+e.message, true);
+  }
 }
 
 function renderMap(){
