@@ -988,10 +988,57 @@ function getFiltered(){
 const pharmCache={};
 
 
+// ── 히트맵 (지역 필터: 시/구 선택 시에만 자동 표시, 가중치=매출 금액) ──
+let heatmap=null;
+
+// 현재 표시 중인 제품들의 매출 합계
+function itemAmount(d){
+  let s=0;
+  for(const p of PRODS){ if(activeProd.has(p) && d.prods[p]) s+=d.prods[p]; }
+  return s;
+}
+
+function updateHeatmap(list){
+  if(!gmap || !window.naver || !naver.maps.visualization){ return; }
+  // 시/구 필터가 잡혔을 때만 표시 (도 단위 전체는 너무 넓어 의미 없음)
+  const on = activeReg.gu.size>0 || activeReg.si.size>0;
+  if(!on){
+    if(heatmap){ heatmap.setMap(null); heatmap=null; }
+    return;
+  }
+  const pts=[];
+  for(const d of list){
+    if(!d.lat||!d.lng) continue;
+    const amt=itemAmount(d);
+    if(amt<=0) continue;
+    pts.push(new naver.maps.visualization.WeightedLocation(d.lat, d.lng, amt));
+  }
+  if(!pts.length){
+    if(heatmap){ heatmap.setMap(null); heatmap=null; }
+    return;
+  }
+  if(!heatmap){
+    heatmap=new naver.maps.visualization.HeatMap({
+      map:gmap, data:pts, radius:24, opacity:0.65
+    });
+  } else {
+    heatmap.setData(pts);
+    heatmap.setMap(gmap);
+  }
+  // 금액 편차가 커서 최대값 기준으로 두면 대부분 안 보임 → 상위 15% 평균을 기준으로
+  const amts=pts.map(p=>p.weight).sort((a,b)=>b-a);
+  const topN=Math.max(1, Math.round(amts.length*0.15));
+  const top=amts.slice(0, topN);
+  const mx=top.reduce((s,v)=>s+v,0)/top.length;
+  heatmap.setOptions({ colorMap:'seoul', max: mx||amts[0] });
+}
+
 function renderMap(){
   markers.forEach(m=>m.setMap(null));markers=[];
   if(!gmap) return;
-  updateStats(getFiltered());
+  const filtered=getFiltered();
+  updateHeatmap(filtered);
+  updateStats(filtered);
 }
 
 // 필터 변경 시 지도+목록+통계 한 번에 갱신
@@ -1156,7 +1203,7 @@ async function showPopup(d){
     if(pharm.length){
       document.getElementById('pp-pharm').innerHTML=pharm.map(c=>pharmHtml(c)).join('');
     } else {
-      document.getElementById('pp-pharm').innerHTML='<div class="cli-empty">좌표 데이터 없음</div>';
+      document.getElementById('pp-pharm').innerHTML='<div class="cli-empty">같은 건물 약국 없음</div>'+diag;
     }
     document.getElementById('pp-near').innerHTML=near.length
       ?near.map(c=>cliHtml(c,false,true)).join('')
@@ -1201,8 +1248,9 @@ async function fetchClinics(lat,lng,addr){
   //       분당로 50          → road=분당로,          bno=50
   function extractRoadAndBno(a){
     if(!a) return {road:null, bno:null};
-    // 괄호/@제거 후 공백까지 모두 제거 → 띄어쓰기 차이 무력화
-    const s=a.replace(/\([^)]*\)/g,' ').replace(/@/g,' ').replace(/\s+/g,'');
+    // 괄호/@제거 → 층수 제거(공백붙은 'N층'이 건물번호에 들러붙는 것 방지) → 공백 제거
+    let s=a.replace(/\([^)]*\)/g,' ').replace(/@/g,' ');
+    s=stripFloor(s).replace(/\s+/g,'');
     // '…로/대로' + (NN길)? + 건물번호 패턴을 끝까지 훑어 마지막 매치 채택
     const re=/([가-힣]+?(?:대로|로))(\d+(?:가|번)?길)?(\d+(?:-\d+)?)/g;
     let best=null, mm;
@@ -1842,7 +1890,22 @@ function darkStyle(){return[
 ];}
 </script>
 
-<script src="https://oapi.map.naver.com/openapi/v3/maps.js?ncpKeyId=bk2yj9j9jx&submodules=geocoder"></script>
+<script>
+  // 네이버 지도 인증 실패 시 호출됨 → 진짜 원인을 화면에 표시 (평문통신 메시지에 가려지는 것 방지)
+  window.navermap_authFailure = function(){
+    console.error('navermap_authFailure: 네이버 지도 인증 실패');
+    const m=document.getElementById('map');
+    if(m) m.innerHTML='<div style="padding:24px;color:#ff6b6b;font-size:13px;line-height:1.7;font-family:sans-serif">'
+      +'<b>⚠ 네이버 지도 인증 실패</b><br>지도 SDK 자체는 정상 로드됐지만 네이버가 인증을 거부했습니다.<br><br>'
+      +'NCP 콘솔에서 아래를 확인하세요:<br>'
+      +'1) <b>월 무료 사용량 초과</b> 여부 (매월 리셋)<br>'
+      +'2) <b>키(ncpKeyId)</b> 유효성 / 서비스 개편에 따른 재발급 필요 여부<br>'
+      +'3) <b>Web 서비스 URL</b>에 <code>https://new-clini.vercel.app</code> 등록 (포트·경로 없이)<br>'
+      +'4) <b>Dynamic Map</b> 서비스 신청 여부'
+      +'</div>';
+  };
+</script>
+<script src="https://oapi.map.naver.com/openapi/v3/maps.js?ncpKeyId=bk2yj9j9jx&submodules=geocoder,visualization"></script>
 <script>
   // 네이버 SDK는 callback 미지원 → 로드 완료 후 직접 초기화
   if(window.naver && naver.maps){ initMap(); }
