@@ -1145,7 +1145,7 @@ async function showPopup(d){
     if(result._err){
       diag=`<div class="cli-empty" style="color:var(--red);font-size:11px">⚠ 카카오 검색 오류: ${result._err}<br>(카카오 콘솔에 현재 사이트 도메인 등록 필요)</div>`;
     } else if(!pharm.length){
-      const myKey=`${result._myRoad||'?'} ${result._myBno||'?'}`;
+      const myKey=`${result._myRoad||'?'} ${result._myBno||'?'}${result._myJibun?' / '+result._myJibun:''}${result._conv?'':' (주소변환 실패)'}`;
       const list=(result._pharmList||[]).map(p=>`<div style="font-size:10px;color:var(--text2);padding:1px 0">· ${p.name} <span style="opacity:.7">[${p.addr||'주소없음'}] ${p.dist}m</span></div>`).join('');
       diag=`<details style="margin-top:6px"><summary style="font-size:11px;color:var(--text2);cursor:pointer">🔍 검색된 약국 ${result._rawPharm}곳 보기 (내 건물키: ${myKey})</summary>${list||'<div style="font-size:10px;color:var(--text2)">검색 결과 없음</div>'}</details>`;
     }
@@ -1156,7 +1156,7 @@ async function showPopup(d){
     if(pharm.length){
       document.getElementById('pp-pharm').innerHTML=pharm.map(c=>pharmHtml(c)).join('');
     } else {
-      document.getElementById('pp-pharm').innerHTML='<div class="cli-empty">좌표 데이터 없음</div>';
+      document.getElementById('pp-pharm').innerHTML='<div class="cli-empty">같은 건물 약국 없음</div>'+diag;
     }
     document.getElementById('pp-near').innerHTML=near.length
       ?near.map(c=>cliHtml(c,false,true)).join('')
@@ -1201,8 +1201,9 @@ async function fetchClinics(lat,lng,addr){
   //       분당로 50          → road=분당로,          bno=50
   function extractRoadAndBno(a){
     if(!a) return {road:null, bno:null};
-    // 괄호/@제거 후 공백까지 모두 제거 → 띄어쓰기 차이 무력화
-    const s=a.replace(/\([^)]*\)/g,' ').replace(/@/g,' ').replace(/\s+/g,'');
+    // 괄호/@제거 → 층수 제거(공백붙은 'N층'이 건물번호에 들러붙는 것 방지) → 공백 제거
+    let s=a.replace(/\([^)]*\)/g,' ').replace(/@/g,' ');
+    s=stripFloor(s).replace(/\s+/g,'');
     // '…로/대로' + (NN길)? + 건물번호 패턴을 끝까지 훑어 마지막 매치 채택
     const re=/([가-힣]+?(?:대로|로))(\d+(?:가|번)?길)?(\d+(?:-\d+)?)/g;
     let best=null, mm;
@@ -1256,29 +1257,37 @@ async function fetchClinics(lat,lng,addr){
 
   // 지번주소(동/리/가 + 번지) 추출 — 도로명이 없을 때 보조 매칭용
   // 공백을 유지해 동(洞) 이름이 앞의 시/군/구와 붙어 깎이지 않게 함 (예: 구로동→로동 방지)
+  // '2685 1'처럼 부번이 공백으로 붙은 표기도 '2685-1'로 정규화 ('1층' 등 단위 붙은 숫자는 제외)
   function extractJibun(a){
     if(!a) return null;
     const s=a.replace(/\([^)]*\)/g,' ').replace(/@/g,' ').replace(/\s+/g,' ').trim();
-    // 문자열 시작 또는 공백 뒤의 '○○동/리/가' 토큰 + 번지
-    const m=s.match(/(?:^|\s)([가-힣]+(?:동|리|가))\s*(\d+(?:-\d+)?)/);
-    return m?(m[1]+m[2]):null;
+    const m=s.match(/(?:^|\s)([가-힣]+(?:동|리|가))\s*[,]?\s*(\d+)(?:\s*-\s*(\d+)|\s+(\d+)(?=\s|$))?/);
+    if(!m) return null;
+    const sub=m[3]||m[4];
+    return m[1]+m[2]+(sub?'-'+sub:'');
   }
   const myJibun=extractJibun(addr);
 
   // 같은 건물 판정
   // 1) 도로명+건물번호가 같으면 → 거리와 무관하게 같은 건물 (좌표 오차 방지)
   // 2) 지번(동+번지)이 같아도 같은 건물
-  // 3) 위 정보가 없으면 거리 25m 이내로 fallback
+  // 3) 카카오 주소변환으로 얻은 '정확한 건물좌표' 기준 20m 이내
+  // 4) 위 정보가 없으면 거리 25m 이내로 fallback
+  // ※ myRoadK/myBnoK/myJibunK/convLat/convLng 는 아래 주소변환 단계에서 보강됨
   function sameBuilding(dist, r){
     const raddrRoad=r.road_address_name||'';
     const raddrJibun=r.address_name||'';
-    if(myRoad && myBno){
+    if(myRoadK && myBnoK){
       const {road:rRoad, bno:rBno}=extractRoadAndBno(raddrRoad||raddrJibun);
-      if(rRoad && rBno && rRoad===myRoad && rBno===myBno) return true;
+      if(rRoad && rBno && rRoad===myRoadK && rBno===myBnoK) return true;
     }
-    if(myJibun){
+    if(myJibunK){
       const rJibun=extractJibun(raddrJibun||raddrRoad);
-      if(rJibun && rJibun===myJibun) return true;
+      if(rJibun && rJibun===myJibunK) return true;
+    }
+    if(convLat!=null){
+      const d2=getDist(convLat, convLng, parseFloat(r.y), parseFloat(r.x));
+      if(d2<=20) return true;   // 카카오 좌표계끼리라 같은 건물이면 매우 가까움
     }
     // 주소 매칭이 안 될 때만 거리로 판정 (좁게)
     return dist<=25;
@@ -1311,15 +1320,60 @@ async function fetchClinics(lat,lng,addr){
     return m?m[1].trim():cleanAddr;
   })();
   // 지번주소 추출 (시군구 + 동 + 번지) — 카카오가 지번으로만 등록한 약국 매칭용
-  // 괄호 안(예: (태평동))도 살펴봄
+  // 괄호 안(예: (태평동))도 살펴봄. '2685 1' 공백 부번은 '2685-1'로 정규화.
   const jibunAddrQuery=(()=>{
     const sgg=(addr||'').match(/([가-힣]+[시군](?:\s+[가-힣]+구)?)/);
     const full=(addr||'').replace(/@/g,' ');
-    const dong=full.match(/([가-힣]+[0-9]*(?:동|리|가))\s*[,]?\s*(\d+(?:-\d+)?)/);
-    if(dong) return ((sgg?sgg[1]+' ':'')+dong[1]+' '+dong[2]).trim();
+    const dong=full.match(/([가-힣]+[0-9]*(?:동|리|가))\s*[,]?\s*(\d+)(?:\s*-\s*(\d+)|\s+(\d+)(?=\s|$))?/);
+    if(dong){
+      const sub=dong[3]||dong[4];
+      return ((sgg?sgg[1]+' ':'')+dong[1]+' '+dong[2]+(sub?'-'+sub:'')).trim();
+    }
     return null;
   })();
-  const [clinics1, clinics2, pharmsCat50, pharmsCatWide, pharmsByAddr1, pharmsByAddr2, pharmsByAddr3]=await Promise.all([
+
+  // ── 주소 변환 (카카오 address.json): 도로명↔지번 상호 변환 + 정확한 건물좌표 ──
+  // 내 주소가 도로명뿐이어도 지번키를, 지번뿐이어도 도로명키를 확보한다.
+  // (카카오에 지번으로만 등록된 약국 ↔ 도로명 주소 매출자료의 간극을 공식적으로 메움)
+  async function kakaoAddrLookup(q){
+    try{
+      const res=await fetch(
+        `https://dapi.kakao.com/v2/local/search/address.json?query=${encodeURIComponent(q)}&size=1`,
+        {headers:{'Authorization':`KakaoAK ${KAKAO_REST}`}});
+      if(!res.ok){ _kakaoErr=`HTTP ${res.status} (addr변환)`; return null; }
+      const d=await res.json();
+      if(d.errorType||d.code){ _kakaoErr=`${d.errorType||d.code}: ${d.message||''}`; return null; }
+      return (d.documents&&d.documents[0])||null;
+    }catch(e){ _kakaoErr='네트워크/CORS 오류: '+e.message; return null; }
+  }
+
+  let myRoadK=myRoad, myBnoK=myBno, myJibunK=myJibun, convLat=null, convLng=null, _convOk=false;
+  {
+    const lookupQ=(myRoad&&myBno)?roadAddrOnly:(jibunAddrQuery||cleanAddr);
+    const conv=lookupQ?await kakaoAddrLookup(lookupQ):null;
+    if(conv){
+      _convOk=true;
+      convLat=parseFloat(conv.y); convLng=parseFloat(conv.x);
+      const ca=conv.address, cr=conv.road_address;
+      if(!myJibunK && ca && ca.region_3depth_name && ca.main_address_no){
+        const dongNm=ca.region_3depth_name.split(' ').pop();
+        myJibunK=dongNm+ca.main_address_no+(ca.sub_address_no?'-'+ca.sub_address_no:'');
+      }
+      if((!myRoadK||!myBnoK) && cr && cr.road_name && cr.main_building_no){
+        myRoadK=cr.road_name.replace(/\s/g,'');
+        myBnoK=cr.main_building_no+(cr.sub_building_no?'-'+cr.sub_building_no:'');
+      }
+    }
+  }
+  // 변환으로 얻은 지번으로 추가 약국 검색 쿼리 구성 (원래 지번이 없던 도로명 주소용)
+  const convJibunQuery=(()=>{
+    if(jibunAddrQuery||!myJibunK) return null;
+    const sgg=(addr||'').match(/([가-힣]+[시군](?:\s+[가-힣]+구)?)/);
+    const m=myJibunK.match(/^([가-힣]+(?:동|리|가))(.+)$/);
+    return m?((sgg?sgg[1]+' ':'')+m[1]+' '+m[2]).trim():null;
+  })();
+
+  const [clinics1, clinics2, pharmsCat50, pharmsCatWide, pharmsByAddr1, pharmsByAddr2, pharmsByAddr3, pharmsByAddr4]=await Promise.all([
     kakaoCategory('HP8', 300, 2),               // 병원/의원 카테고리
     kakaoSearch('의원', 250, 1),
     kakaoCategory('PM9', 50, 1),                 // 약국 반경 50m (주 표시용)
@@ -1327,9 +1381,10 @@ async function fetchClinics(lat,lng,addr){
     cleanAddr ? kakaoSearchByAddr(roadAddrOnly+' 약국', 15) : Promise.resolve([]),
     roadAddrOnly!==cleanAddr ? kakaoSearchByAddr(cleanAddr, 15) : Promise.resolve([]),
     jibunAddrQuery ? kakaoSearchByAddr(jibunAddrQuery+' 약국', 15) : Promise.resolve([]),
+    convJibunQuery ? kakaoSearchByAddr(convJibunQuery+' 약국', 15) : Promise.resolve([]),
   ]);
   // 주소검색으로 나온 약국(좌표 무관, 같은건물 후보)
-  const addrPharms=[...pharmsByAddr1, ...pharmsByAddr2, ...pharmsByAddr3].filter(r=>r&&(r.category_group_code==='PM9'||/약국/.test(r.place_name||'')));
+  const addrPharms=[...pharmsByAddr1, ...pharmsByAddr2, ...pharmsByAddr3, ...pharmsByAddr4].filter(r=>r&&(r.category_group_code==='PM9'||/약국/.test(r.place_name||'')));
   // 반경 50m 약국
   const pharmMap=new Map();
   [...pharmsCat50].forEach(r=>{ if(r&&r.id) pharmMap.set(r.id,r); });
@@ -1429,7 +1484,7 @@ async function fetchClinics(lat,lng,addr){
   near.sort((a,b)=>a.dist-b.dist);
   return {same:same.slice(0,15), pharm:pharm.slice(0,5), near:near.slice(0,15),
           _err:_kakaoErr, _rawPharm:(pharms50.length+pharmsWide.length), _rawClinic:clinicMap.size,
-          _myRoad:myRoad, _myBno:myBno, _pharmFallback:pharmFallback, _pharmList:_allPharmDbg.slice(0,12)};
+          _myRoad:myRoadK, _myBno:myBnoK, _myJibun:myJibunK, _conv:_convOk, _pharmFallback:pharmFallback, _pharmList:_allPharmDbg.slice(0,12)};
 }
 
 function getDist(la1,lo1,la2,lo2){
@@ -1842,6 +1897,21 @@ function darkStyle(){return[
 ];}
 </script>
 
+<script>
+  // 네이버 지도 인증 실패 시 호출됨 → 진짜 원인을 화면에 표시 (평문통신 메시지에 가려지는 것 방지)
+  window.navermap_authFailure = function(){
+    console.error('navermap_authFailure: 네이버 지도 인증 실패');
+    const m=document.getElementById('map');
+    if(m) m.innerHTML='<div style="padding:24px;color:#ff6b6b;font-size:13px;line-height:1.7;font-family:sans-serif">'
+      +'<b>⚠ 네이버 지도 인증 실패</b><br>지도 SDK 자체는 정상 로드됐지만 네이버가 인증을 거부했습니다.<br><br>'
+      +'NCP 콘솔에서 아래를 확인하세요:<br>'
+      +'1) <b>월 무료 사용량 초과</b> 여부 (매월 리셋)<br>'
+      +'2) <b>키(ncpKeyId)</b> 유효성 / 서비스 개편에 따른 재발급 필요 여부<br>'
+      +'3) <b>Web 서비스 URL</b>에 <code>https://new-clini.vercel.app</code> 등록 (포트·경로 없이)<br>'
+      +'4) <b>Dynamic Map</b> 서비스 신청 여부'
+      +'</div>';
+  };
+</script>
 <script src="https://oapi.map.naver.com/openapi/v3/maps.js?ncpKeyId=bk2yj9j9jx&submodules=geocoder"></script>
 <script>
   // 네이버 SDK는 callback 미지원 → 로드 완료 후 직접 초기화
