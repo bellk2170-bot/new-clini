@@ -1054,10 +1054,18 @@ function updateHeatmap(list){
 
 function renderMap(){
   markers.forEach(m=>m.setMap(null));markers=[];
-  if(!gmap) return;
   const filtered=getFiltered();
-  updateHeatmap(filtered);
   updateStats(filtered);
+  if(!gmap){
+    // 지도 객체가 없음 = 네이버 지도 초기화/인증 실패 → 히트맵도 불가. 원인을 표시.
+    const b=document.getElementById('heat-badge');
+    if(b && (activeReg.gu.size>0||activeReg.si.size>0)){
+      b.style.display='block'; b.style.color='#ff6b6b';
+      b.textContent='⚠ 지도가 초기화되지 않음 (네이버 인증/로드 실패) → 히트맵 불가';
+    }
+    return;
+  }
+  updateHeatmap(filtered);
 }
 
 // 필터 변경 시 지도+목록+통계 한 번에 갱신
@@ -1927,8 +1935,28 @@ function darkStyle(){return[
 <script src="https://oapi.map.naver.com/openapi/v3/maps.js?ncpKeyId=bk2yj9j9jx&submodules=geocoder,visualization"></script>
 <script>
   // 네이버 SDK는 callback 미지원 → 로드 완료 후 직접 초기화
-  if(window.naver && naver.maps){ initMap(); }
-  else { window.addEventListener('load', ()=>{ if(window.naver&&naver.maps) initMap(); }); }
+  function _bootMap(){
+    const m=document.getElementById('map');
+    if(!window.naver || !naver.maps){
+      if(m) m.innerHTML='<div style="padding:24px;color:#ff6b6b;font-size:13px;line-height:1.7;font-family:sans-serif">'
+        +'<b>⚠ 네이버 지도 SDK 로드 실패</b><br>maps.js 를 불러오지 못했습니다.<br>'
+        +'네트워크 차단(사내망/방화벽), 또는 스크립트 요청 실패를 확인하세요.<br>'
+        +'(브라우저 F12 → Network 탭에서 maps.js 상태 코드 확인)</div>';
+      console.error('naver maps SDK 로드 실패');
+      return;
+    }
+    try{
+      initMap();
+      if(!gmap) throw new Error('gmap 생성 실패');
+      console.log('지도 초기화 완료');
+    }catch(e){
+      console.error('initMap 오류', e);
+      if(m) m.innerHTML='<div style="padding:24px;color:#ff6b6b;font-size:13px;font-family:sans-serif">'
+        +'<b>⚠ 지도 초기화 오류</b><br>'+e.message+'</div>';
+    }
+  }
+  if(window.naver && naver.maps){ _bootMap(); }
+  else { window.addEventListener('load', _bootMap); }
 </script>
 </body>
 </html>
