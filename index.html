@@ -232,7 +232,6 @@ body{background:var(--bg);color:var(--text);font-family:var(--font);height:100vh
   </div>
   <div class="mwrap">
     <div id="map"></div>
-    <div id="heat-badge" style="display:none;position:absolute;top:10px;left:10px;z-index:50;background:rgba(0,0,0,.72);color:var(--text2);font-size:11px;padding:5px 9px;border-radius:6px;pointer-events:none;max-width:280px;line-height:1.5"></div>
     <div class="popup" id="popup">
       <button class="closebtn" onclick="closePopup()">✕</button>
       <div class="pname" id="pp-n"></div>
@@ -293,10 +292,6 @@ window.initMap=function(){
     zoomControl:true,
     zoomControlOptions:{position:naver.maps.Position.RIGHT_CENTER},
   });
-  // visualization 등 서브모듈은 본 스크립트 이후에 로드됨 → 로드 완료 후 히트맵 재시도
-  naver.maps.onJSContentLoaded=function(){
-    try{ renderMap(); }catch(e){ console.warn('onJSContentLoaded renderMap', e); }
-  };
 };
 
 
@@ -993,79 +988,10 @@ function getFiltered(){
 const pharmCache={};
 
 
-// ── 히트맵 (지역 필터: 시/구 선택 시에만 자동 표시, 가중치=매출 금액) ──
-let heatmap=null;
-
-// 현재 표시 중인 제품들의 매출 합계
-function itemAmount(d){
-  let s=0;
-  for(const p of PRODS){ if(activeProd.has(p) && d.prods[p]) s+=d.prods[p]; }
-  return s;
-}
-
-function updateHeatmap(list){
-  if(!gmap) return;
-  // 시/구 필터가 잡혔을 때만 표시 (도 단위 전체는 너무 넓어 의미 없음)
-  const on = activeReg.gu.size>0 || activeReg.si.size>0;
-  const badge=document.getElementById('heat-badge');
-  const showBadge=(txt,warn)=>{ if(badge){ badge.textContent=txt; badge.style.display=txt?'block':'none'; badge.style.color=warn?'#ff6b6b':'var(--text2)'; } };
-  if(!on){
-    if(heatmap){ heatmap.setMap(null); }
-    showBadge('');
-    return;
-  }
-  // 시각화 서브모듈 로드 확인 (미로드면 원인을 화면에 표시)
-  if(!window.naver || !naver.maps || !naver.maps.visualization){
-    showBadge('⚠ 히트맵 모듈(visualization) 미로드 — 지도 인증/네트워크 확인', true);
-    return;
-  }
-  const pts=[], amts=[];
-  for(const d of list){
-    if(!d.lat||!d.lng) continue;
-    const amt=itemAmount(d);
-    if(amt<=0) continue;
-    pts.push(new naver.maps.visualization.WeightedLocation(Number(d.lat), Number(d.lng), amt));
-    amts.push(amt);
-  }
-  if(!pts.length){
-    if(heatmap){ heatmap.setMap(null); }
-    showBadge('히트맵: 표시할 좌표 없음 (좌표 변환 대기 중일 수 있음)');
-    return;
-  }
-  // 금액 편차가 커서 최대값 기준이면 대부분 안 보임 → 상위 15% 평균을 기준으로
-  amts.sort((a,b)=>b-a);
-  const topN=Math.max(1, Math.round(amts.length*0.15));
-  const mx=amts.slice(0,topN).reduce((s,v)=>s+v,0)/topN;
-  try{
-    if(!heatmap){
-      heatmap=new naver.maps.visualization.HeatMap({ map:gmap, data:pts, radius:24, opacity:0.65 });
-    } else {
-      heatmap.setData(pts);
-      heatmap.setMap(gmap);
-    }
-    heatmap.setOptions({ colorMap:'seoul', radius:24, opacity:0.65, max: mx||amts[0] });
-    heatmap.redraw();   // ★ setData 후 redraw() 해야 화면에 반영됨 (공식 문서)
-    showBadge(`🔥 히트맵 ${pts.length}곳 표시 중`);
-  }catch(e){
-    console.error('heatmap error', e);
-    showBadge('⚠ 히트맵 오류: '+e.message, true);
-  }
-}
-
 function renderMap(){
   markers.forEach(m=>m.setMap(null));markers=[];
-  const filtered=getFiltered();
-  updateStats(filtered);
-  if(!gmap){
-    // 지도 객체가 없음 = 네이버 지도 초기화/인증 실패 → 히트맵도 불가. 원인을 표시.
-    const b=document.getElementById('heat-badge');
-    if(b && (activeReg.gu.size>0||activeReg.si.size>0)){
-      b.style.display='block'; b.style.color='#ff6b6b';
-      b.textContent='⚠ 지도가 초기화되지 않음 (네이버 인증/로드 실패) → 히트맵 불가';
-    }
-    return;
-  }
-  updateHeatmap(filtered);
+  if(!gmap) return;
+  updateStats(getFiltered());
 }
 
 // 필터 변경 시 지도+목록+통계 한 번에 갱신
@@ -1230,7 +1156,7 @@ async function showPopup(d){
     if(pharm.length){
       document.getElementById('pp-pharm').innerHTML=pharm.map(c=>pharmHtml(c)).join('');
     } else {
-      document.getElementById('pp-pharm').innerHTML='<div class="cli-empty">같은 건물 약국 없음</div>'+diag;
+      document.getElementById('pp-pharm').innerHTML='<div class="cli-empty">좌표 데이터 없음</div>';
     }
     document.getElementById('pp-near').innerHTML=near.length
       ?near.map(c=>cliHtml(c,false,true)).join('')
@@ -1275,9 +1201,8 @@ async function fetchClinics(lat,lng,addr){
   //       분당로 50          → road=분당로,          bno=50
   function extractRoadAndBno(a){
     if(!a) return {road:null, bno:null};
-    // 괄호/@제거 → 층수 제거(공백붙은 'N층'이 건물번호에 들러붙는 것 방지) → 공백 제거
-    let s=a.replace(/\([^)]*\)/g,' ').replace(/@/g,' ');
-    s=stripFloor(s).replace(/\s+/g,'');
+    // 괄호/@제거 후 공백까지 모두 제거 → 띄어쓰기 차이 무력화
+    const s=a.replace(/\([^)]*\)/g,' ').replace(/@/g,' ').replace(/\s+/g,'');
     // '…로/대로' + (NN길)? + 건물번호 패턴을 끝까지 훑어 마지막 매치 채택
     const re=/([가-힣]+?(?:대로|로))(\d+(?:가|번)?길)?(\d+(?:-\d+)?)/g;
     let best=null, mm;
@@ -1917,46 +1842,11 @@ function darkStyle(){return[
 ];}
 </script>
 
-<script>
-  // 네이버 지도 인증 실패 시 호출됨 → 진짜 원인을 화면에 표시 (평문통신 메시지에 가려지는 것 방지)
-  window.navermap_authFailure = function(){
-    console.error('navermap_authFailure: 네이버 지도 인증 실패');
-    const m=document.getElementById('map');
-    if(m) m.innerHTML='<div style="padding:24px;color:#ff6b6b;font-size:13px;line-height:1.7;font-family:sans-serif">'
-      +'<b>⚠ 네이버 지도 인증 실패</b><br>지도 SDK 자체는 정상 로드됐지만 네이버가 인증을 거부했습니다.<br><br>'
-      +'NCP 콘솔에서 아래를 확인하세요:<br>'
-      +'1) <b>월 무료 사용량 초과</b> 여부 (매월 리셋)<br>'
-      +'2) <b>키(ncpKeyId)</b> 유효성 / 서비스 개편에 따른 재발급 필요 여부<br>'
-      +'3) <b>Web 서비스 URL</b>에 <code>https://new-clini.vercel.app</code> 등록 (포트·경로 없이)<br>'
-      +'4) <b>Dynamic Map</b> 서비스 신청 여부'
-      +'</div>';
-  };
-</script>
-<script src="https://oapi.map.naver.com/openapi/v3/maps.js?ncpKeyId=bk2yj9j9jx&submodules=geocoder,visualization"></script>
+<script src="https://oapi.map.naver.com/openapi/v3/maps.js?ncpKeyId=bk2yj9j9jx&submodules=geocoder"></script>
 <script>
   // 네이버 SDK는 callback 미지원 → 로드 완료 후 직접 초기화
-  function _bootMap(){
-    const m=document.getElementById('map');
-    if(!window.naver || !naver.maps){
-      if(m) m.innerHTML='<div style="padding:24px;color:#ff6b6b;font-size:13px;line-height:1.7;font-family:sans-serif">'
-        +'<b>⚠ 네이버 지도 SDK 로드 실패</b><br>maps.js 를 불러오지 못했습니다.<br>'
-        +'네트워크 차단(사내망/방화벽), 또는 스크립트 요청 실패를 확인하세요.<br>'
-        +'(브라우저 F12 → Network 탭에서 maps.js 상태 코드 확인)</div>';
-      console.error('naver maps SDK 로드 실패');
-      return;
-    }
-    try{
-      initMap();
-      if(!gmap) throw new Error('gmap 생성 실패');
-      console.log('지도 초기화 완료');
-    }catch(e){
-      console.error('initMap 오류', e);
-      if(m) m.innerHTML='<div style="padding:24px;color:#ff6b6b;font-size:13px;font-family:sans-serif">'
-        +'<b>⚠ 지도 초기화 오류</b><br>'+e.message+'</div>';
-    }
-  }
-  if(window.naver && naver.maps){ _bootMap(); }
-  else { window.addEventListener('load', _bootMap); }
+  if(window.naver && naver.maps){ initMap(); }
+  else { window.addEventListener('load', ()=>{ if(window.naver&&naver.maps) initMap(); }); }
 </script>
 </body>
 </html>
