@@ -611,7 +611,7 @@ function addrPrefix(s){
 //    "분당로 50"처럼 길이 없으면 로/대로 뒤 숫자가 건물번호.
 function addrCore(s){
   // 도로명: XX로/대로 (+ 선택적 NN길/NN가길/NN번길) + 건물번호
-  const m=s.match(/((?:[가-힣A-Za-z0-9]+)(?:대로|로))(?:\s*(\d+(?:가|번)?길))?\s*[, ]?\s*(\d+(?:-\d+)?)/);
+  const m=s.match(/((?:[가-힣A-Za-z0-9]+)(?:대로|로))(?:\s*(\d+[가-힣]?길))?\s*[, ]?\s*(\d+(?:-\d+)?)(?!\d)(?![가-힣]?길)/);
   if(m){
     const road=m[1]+(m[2]||'');
     return (road+m[3]).replace(/\s/g,'');
@@ -665,7 +665,7 @@ function cleanAddrForGeocode(a){
   s=s.replace(/[가-힣A-Za-z0-9-]*외\s*\d+\s*필지/g,' ');
   s=s.replace(/\s+/g,' ').trim();
   // 시도 + 시군구 + 도로명 + 건물번호 까지만 잘라서 반환
-  const m=s.match(/^(.*?(?:대로|로)(?:\s*\d+(?:가|번)?길)?\s*\d+(?:-\d+)?)/);
+  const m=s.match(/^(.*?(?:대로|로)(?:\s*\d+[가-힣]?길)?\s*\d+(?:-\d+)?(?!\d)(?![가-힣]?길))/);
   if(m) return m[1].replace(/\s+/g,' ').trim();
   // 도로명 매칭 실패 시 동+번지까지
   const m2=s.match(/^(.*?[가-힣]+(?:동|리|가)\s*\d+(?:-\d+)?)/);
@@ -781,7 +781,7 @@ function isImpreciseAddr(addr){
   // 괄호 보조표기 제거, '지하149' 같은 지하 건물번호 인식되게 '지하' 제거
   let a=addr.replace(/\([^)]*\)/g,' ').replace(/@/g,' ').replace(/지하/g,' ').trim();
   // 도로명(로/대로/길) + (쉼표/공백) + 건물번호
-  const roadBldNo=/(?:[가-힣A-Za-z0-9]+(?:대로|로|길))\s*[,]?\s*\d+(?:-\d+)?/.test(a);
+  const roadBldNo=/(?:[가-힣A-Za-z0-9]+(?:대로|로|길))\s*[,]?\s*\d+(?:-\d+)?(?!\d)(?![가-힣]?길)/.test(a);
   // 지번주소: 동/리/가(성사2동처럼 숫자 포함 가능) + (쉼표/공백) + 번지
   const jibunNo=/(?:[가-힣]+[0-9]*(?:동|리|가))\s*[,]?\s*\d+(?:-\d+)?/.test(a);
   return !(roadBldNo||jibunNo);
@@ -1038,12 +1038,17 @@ function renderList(){
     const nm=d.name;
     // allData 인덱스를 직접 사용해서 정렬과 무관하게 정확히 찾음
     const ai=allData.indexOf(d);
+    // 약국 캐시: 문자열=약국명 / 'NONE'=검색했지만 없음 / null·undefined=미검색
+    const pc=pharmCache[ai];
     const impWarn=isImpreciseAddr(d.addr)?'<span style="color:var(--red);font-size:10px;flex-shrink:0">⚠번지없음</span>':'';
-    // 약국 캐시가 있으면 주소 대신 약국명 표시
-    const pharmLabel=pharmCache[ai]!==undefined ? pharmCache[ai] : null;
-    const addrLine = pharmLabel!==null
-      ? `<span class="pa-pharm">${pharmLabel}</span>`
-      : `<span class="pa-addr">${d.addr||'-'}</span>${impWarn}`;
+    let addrLine;
+    if(typeof pc==='string' && pc!=='NONE'){
+      addrLine=`<span class="pa-pharm">${pc}</span>`;
+    } else if(pc==='NONE'){
+      addrLine=`<span class="pa-addr">${d.addr||'-'}</span><span style="color:var(--text2);font-size:10px;flex-shrink:0;opacity:.7">·약국없음</span>${impWarn}`;
+    } else {
+      addrLine=`<span class="pa-addr">${d.addr||'-'}</span>${impWarn}`;
+    }
     return `<div class="pi" onclick="focusItem(${ai})" data-i="${i}">
       <div class="pn">${nm}</div>
       <div class="pa">${addrLine}</div>
@@ -1079,16 +1084,16 @@ async function focusItem(ai){
         const first=pharm[0].name;
         pharmCache[ai]=pharm.length>1 ? `💊 ${first} 외 ${pharm.length-1}` : `💊 ${first}`;
       } else {
-        pharmCache[ai]=null; // 없으면 주소로 복원
+        pharmCache[ai]='NONE'; // 검색했지만 같은 건물 약국 없음 (미검색과 구분)
       }
       // 해당 카드만 주소줄 갱신
       const cardEl=document.querySelector(`.pi[onclick="focusItem(${ai})"] .pa`);
       if(cardEl){
-        if(pharmCache[ai]!==null){
+        const impWarn=isImpreciseAddr(d.addr)?'<span style="color:var(--red);font-size:10px;flex-shrink:0">⚠번지없음</span>':'';
+        if(pharmCache[ai]!=='NONE'){
           cardEl.innerHTML=`<span class="pa-pharm">${pharmCache[ai]}</span>`;
         } else {
-          const impWarn=isImpreciseAddr(d.addr)?'<span style="color:var(--red);font-size:10px;flex-shrink:0">⚠번지없음</span>':'';
-          cardEl.innerHTML=`<span class="pa-addr">${d.addr||'-'}</span>${impWarn}`;
+          cardEl.innerHTML=`<span class="pa-addr">${d.addr||'-'}</span><span style="color:var(--text2);font-size:10px;flex-shrink:0;opacity:.7">·약국없음</span>${impWarn}`;
         }
       }
     });
@@ -1147,7 +1152,7 @@ async function showPopup(d){
     } else if(!pharm.length){
       const myKey=`${result._myRoad||'?'} ${result._myBno||'?'}${result._myJibun?' / '+result._myJibun:''}${result._conv?'':' (주소변환 실패)'}`;
       const list=(result._pharmList||[]).map(p=>`<div style="font-size:10px;color:var(--text2);padding:1px 0">· ${p.name} <span style="opacity:.7">[${p.addr||'주소없음'}] ${p.dist}m</span></div>`).join('');
-      diag=`<details style="margin-top:6px"><summary style="font-size:11px;color:var(--text2);cursor:pointer">🔍 검색된 약국 ${result._rawPharm}곳 보기 (내 건물키: ${myKey})</summary>${list||'<div style="font-size:10px;color:var(--text2)">검색 결과 없음</div>'}</details>`;
+      diag=`<details style="margin-top:6px"><summary style="font-size:11px;color:var(--text2);cursor:pointer">🔍 검색된 약국 ${result._rawPharm}곳 보기 (v2 · 내 건물키: ${myKey})</summary>${list||'<div style="font-size:10px;color:var(--text2)">검색 결과 없음</div>'}</details>`;
     }
     document.getElementById('pp-same').innerHTML=same.length
       ?same.map(c=>cliHtml(c,true,false)).join('')
@@ -1205,7 +1210,7 @@ async function fetchClinics(lat,lng,addr){
     let s=a.replace(/\([^)]*\)/g,' ').replace(/@/g,' ');
     s=stripFloor(s).replace(/\s+/g,'');
     // '…로/대로' + (NN길)? + 건물번호 패턴을 끝까지 훑어 마지막 매치 채택
-    const re=/([가-힣]+?(?:대로|로))(\d+(?:가|번)?길)?(\d+(?:-\d+)?)/g;
+    const re=/([가-힣]+?(?:대로|로))(\d+[가-힣]?길)?(\d+(?:-\d+)?)(?!\d)(?![가-힣]?길)/g;
     let best=null, mm;
     while((mm=re.exec(s))){
       let road=mm[1];
@@ -1294,12 +1299,14 @@ async function fetchClinics(lat,lng,addr){
   }
 
   // 카카오 카테고리 검색 (PM9=약국, HP8=병원) — 키워드검색보다 누락이 적음
-  async function kakaoCategory(code, radius=500, pages=3){
+  // cx,cy 지정 시 그 좌표를 중심으로 검색 (기본: 네이버 지오코딩 좌표)
+  async function kakaoCategory(code, radius=500, pages=3, cx=null, cy=null){
     const all=[];
+    const qx=cx!=null?cx:lng, qy=cy!=null?cy:lat;
     for(let p=1;p<=pages;p++){
       try{
         const res=await fetch(
-          `https://dapi.kakao.com/v2/local/search/category.json?category_group_code=${code}&x=${lng}&y=${lat}&radius=${radius}&sort=distance&size=15&page=${p}`,
+          `https://dapi.kakao.com/v2/local/search/category.json?category_group_code=${code}&x=${qx}&y=${qy}&radius=${radius}&sort=distance&size=15&page=${p}`,
           {headers:{'Authorization':`KakaoAK ${KAKAO_REST}`}}
         );
         if(!res.ok){ _kakaoErr=`HTTP ${res.status} (cat ${code})`; break; }
@@ -1316,7 +1323,7 @@ async function fetchClinics(lat,lng,addr){
   const cleanAddr=(addr||'').replace(/\([^)]*\)/g,' ').replace(/@/g,' ').replace(/\s+/g,' ').trim();
   // 도로명+건물번호까지만 자른 주소 (예: 경기 성남시 수정구 수정로 141-1)
   const roadAddrOnly=(()=>{
-    const m=cleanAddr.match(/^(.*?(?:대로|로)(?:\s*\d+(?:가|번)?길)?\s*\d+(?:-\d+)?)/);
+    const m=cleanAddr.match(/^(.*?(?:대로|로)(?:\s*\d+[가-힣]?길)?\s*\d+(?:-\d+)?(?!\d)(?![가-힣]?길))/);
     return m?m[1].trim():cleanAddr;
   })();
   // 지번주소 추출 (시군구 + 동 + 번지) — 카카오가 지번으로만 등록한 약국 매칭용
@@ -1403,7 +1410,7 @@ async function fetchClinics(lat,lng,addr){
   function extractRoadAndBnoC(a){
     if(!a) return {road:null, bno:null};
     const s=a.replace(/\([^)]*\)/g,' ').replace(/@/g,' ');
-    const m=s.match(/((?:[가-힣A-Za-z0-9]+)(?:대로|로))(?:\s*(\d+(?:가|번)?길))?\s*[, ]?\s*(\d+(?:-\d+)?)/);
+    const m=s.match(/((?:[가-힣A-Za-z0-9]+)(?:대로|로))(?:\s*(\d+[가-힣]?길))?\s*[, ]?\s*(\d+(?:-\d+)?)(?!\d)(?![가-힣]?길)/);
     if(m){
       const road=(m[1]+(m[2]||'')).replace(/\s/g,'');
       return {road, bno:m[3]};
