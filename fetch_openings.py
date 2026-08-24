@@ -151,7 +151,12 @@ for r in uniq:
 
 print(f"좌표: 신규변환 {need_geo}건 / 재사용 {reused}건 / 실패 {failed}건")
 
-# ── 3단계: CSV 저장 ──────────────────────────────────────────
+# ── 3단계: CSV 저장 ──────────────────────────────────
+# 안전장치: 수집이 비정상적으로 적으면(0건 등) 기존 파일을 덮어쓰지 않음
+if len(uniq) < 50:   # 정상이면 보통 수백~2000건대
+    print(f"⚠ 수집 {len(uniq)}건 — 비정상으로 적어 저장 중단(기존 파일 보존)")
+    raise SystemExit(0)
+
 cols = ["요양기관명","요양종별","시도명","도로명주소","표시과목명","개설일자","전화번호","lat","lng"]
 with open("new-clinics.csv", "w", encoding="utf-8-sig", newline="") as f:
     w = csv.DictWriter(f, fieldnames=cols)
